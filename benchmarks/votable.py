@@ -299,7 +299,7 @@ class TimeVOTableSmallOverhead:
 class PeakMemVOTableArrays:
     """Peak memory while parsing a large table with an array column."""
 
-    params = ['binary', 'binary2']
+    params = ['tabledata', 'binary', 'binary2']
     param_names = ['tabledata_format']
 
     def setup_cache(self):
@@ -314,6 +314,7 @@ class PeakMemVOTableArrays:
             names=['ra', 'dec', 'spectrum']
         )
         votable = from_table(table)
+        votable.to_xml('arrays_tabledata.vot', tabledata_format='tabledata')
         votable.to_xml('arrays_binary.vot', tabledata_format='binary')
         votable.to_xml('arrays_binary2.vot', tabledata_format='binary2')
 
