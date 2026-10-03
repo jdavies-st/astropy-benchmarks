@@ -294,3 +294,28 @@ class TimeVOTableSmallOverhead:
 
     def time_small_binary2(self):
         parse(io.BytesIO(self.binary2_data))
+
+
+class PeakMemVOTableArrays:
+    """Peak memory while parsing a large table with an array column."""
+
+    params = ['binary', 'binary2']
+    param_names = ['tabledata_format']
+
+    def setup_cache(self):
+        # Runs in a separate process, so building the table and writing
+        # the files does not count toward the peak memory measured below.
+        table = Table(
+            [
+                rng.uniform(0, 360, LARGE_SIZE),
+                rng.uniform(-90, 90, LARGE_SIZE),
+                rng.normal(size=(LARGE_SIZE, 50)),
+            ],
+            names=['ra', 'dec', 'spectrum']
+        )
+        votable = from_table(table)
+        votable.to_xml('arrays_binary.vot', tabledata_format='binary')
+        votable.to_xml('arrays_binary2.vot', tabledata_format='binary2')
+
+    def peakmem_parse(self, tabledata_format):
+        parse(f'arrays_{tabledata_format}.vot')
