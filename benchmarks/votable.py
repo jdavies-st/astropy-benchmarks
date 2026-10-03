@@ -1,5 +1,8 @@
 """Benchmarks for VOTable binary/binary2 parsing performance."""
+import ctypes
 import io
+import os
+import sys
 import numpy as np
 from astropy.io.votable import parse, from_table
 from astropy.table import Table
@@ -296,11 +299,75 @@ class TimeVOTableSmallOverhead:
         parse(io.BytesIO(self.binary2_data))
 
 
-class PeakMemVOTableArrays:
+class _RusageInfoV4(ctypes.Structure):
+    """macOS ``struct rusage_info_v4`` from <sys/resource.h>.
+
+    Only the fields used here are named. The rest are kept as unused blocks
+    so the size matches what ``proc_pid_rusage`` writes.
+    """
+
+    _fields_ = [
+        ('ri_uuid', ctypes.c_uint8 * 16),
+        # ri_user_time to ri_resident_size
+        ('unused_1', ctypes.c_uint64 * 7),
+        ('ri_phys_footprint', ctypes.c_uint64),
+        # ri_proc_start_abstime to ri_logical_writes
+        ('unused_2', ctypes.c_uint64 * 20),
+        ('ri_lifetime_max_phys_footprint', ctypes.c_uint64),
+        # ri_instructions to ri_runnable_time
+        ('unused_3', ctypes.c_uint64 * 6),
+    ]
+
+
+def _macos_rusage():
+    """Return this process's macOS resource usage as a `_RusageInfoV4`."""
+    libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    info = _RusageInfoV4()
+    rusage_info_v4 = 4
+    if libproc.proc_pid_rusage(os.getpid(), rusage_info_v4,
+                               ctypes.byref(info)) != 0:
+        raise OSError(ctypes.get_errno(), 'proc_pid_rusage failed')
+    return info
+
+
+def peak_added_bytes(func, *args):
+    """Call ``func(*args)`` and return the peak memory it added, in bytes.
+
+    The result is the process's peak memory after the call minus its memory
+    use just before it, so the interpreter, imported modules and asv itself
+    are left out. This assumes the process has not used more memory earlier
+    than it uses when the call starts. That holds in the fresh process asv
+    starts for each benchmark, as long as ``setup`` does not create and then
+    free large temporary data. Build such data in ``setup_cache`` instead,
+    which runs in a separate process. Data that ``setup`` creates and keeps
+    is fine.
+
+    Linux reports peak resident memory. macOS reports peak physical
+    footprint, which is steadier there than resident memory.
+    """
+    if sys.platform == 'linux':
+        import resource  # not available on Windows
+
+        # With the assumption above, the peak so far is the current use.
+        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        func(*args)
+        after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        return (after - before) * 1024  # Linux reports ru_maxrss in kB
+
+    if sys.platform == 'darwin':
+        before = _macos_rusage().ri_phys_footprint
+        func(*args)
+        return _macos_rusage().ri_lifetime_max_phys_footprint - before
+
+    raise NotImplementedError('peak_added_bytes needs Linux or macOS')
+
+
+class TrackMemVOTableArrays:
     """Peak memory while parsing a large table with an array column."""
 
     params = ['tabledata', 'binary', 'binary2']
     param_names = ['tabledata_format']
+    unit = 'bytes'
 
     def setup_cache(self):
         # Runs in a separate process, so building the table and writing
@@ -318,5 +385,9 @@ class PeakMemVOTableArrays:
         votable.to_xml('arrays_binary.vot', tabledata_format='binary')
         votable.to_xml('arrays_binary2.vot', tabledata_format='binary2')
 
-    def peakmem_parse(self, tabledata_format):
-        parse(f'arrays_{tabledata_format}.vot')
+    def setup(self, tabledata_format):
+        if sys.platform not in ('linux', 'darwin'):
+            raise NotImplementedError('peak_added_bytes needs Linux or macOS')
+
+    def track_peak_memory_parse(self, tabledata_format):
+        return peak_added_bytes(parse, f'arrays_{tabledata_format}.vot')
