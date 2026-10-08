@@ -1,7 +1,6 @@
-"""Benchmarks for VOTable binary/binary2 parsing performance."""
+"""Benchmarks for VOTable parsing speed and memory use."""
 import ctypes
 import io
-import os
 import sys
 import numpy as np
 from astropy.io.votable import parse, from_table
@@ -11,6 +10,7 @@ np.random.seed(42)
 rng = np.random.default_rng(42)
 
 SMALL_SIZE = 1000
+MEDIUM_SIZE = 50000
 LARGE_SIZE = 200000
 
 ra_data = np.random.uniform(0, 360, LARGE_SIZE).astype(np.float32)
@@ -22,6 +22,7 @@ id_data = np.arange(LARGE_SIZE, dtype=np.int64)
 flag_data = np.random.choice([True, False], LARGE_SIZE)
 quality_data = np.random.randint(0, 256, LARGE_SIZE, dtype=np.uint8)
 bool_data = rng.integers(0, 2, LARGE_SIZE, dtype=bool)
+spectrum_data = rng.normal(size=(LARGE_SIZE, 50))
 
 short_names = np.array([f"OBJ_{i:08d}" for i in range(LARGE_SIZE)])
 filter_names = np.random.choice(['u', 'g', 'r', 'i', 'z', 'Y'], LARGE_SIZE)
@@ -299,37 +300,6 @@ class TimeVOTableSmallOverhead:
         parse(io.BytesIO(self.binary2_data))
 
 
-class _RusageInfoV4(ctypes.Structure):
-    """macOS ``struct rusage_info_v4`` from <sys/resource.h>.
-
-    Only the fields used here are named. The rest are kept as unused blocks
-    so the size matches what ``proc_pid_rusage`` writes.
-    """
-
-    _fields_ = [
-        ('ri_uuid', ctypes.c_uint8 * 16),
-        # ri_user_time to ri_resident_size
-        ('unused_1', ctypes.c_uint64 * 7),
-        ('ri_phys_footprint', ctypes.c_uint64),
-        # ri_proc_start_abstime to ri_logical_writes
-        ('unused_2', ctypes.c_uint64 * 20),
-        ('ri_lifetime_max_phys_footprint', ctypes.c_uint64),
-        # ri_instructions to ri_runnable_time
-        ('unused_3', ctypes.c_uint64 * 6),
-    ]
-
-
-def _macos_rusage():
-    """Return this process's macOS resource usage as a `_RusageInfoV4`."""
-    libproc = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
-    info = _RusageInfoV4()
-    rusage_info_v4 = 4
-    if libproc.proc_pid_rusage(os.getpid(), rusage_info_v4,
-                               ctypes.byref(info)) != 0:
-        raise OSError(ctypes.get_errno(), 'proc_pid_rusage failed')
-    return info
-
-
 def peak_added_bytes(func, *args):
     """Call ``func(*args)`` and return the peak memory it added, in bytes.
 
@@ -342,28 +312,26 @@ def peak_added_bytes(func, *args):
     which runs in a separate process. Data that ``setup`` creates and keeps
     is fine.
 
-    Linux reports peak resident memory. macOS reports peak physical
-    footprint, which is steadier there than resident memory.
+    Both Linux and macOS report peak resident set size (RSS). macOS reports
+    ``ru_maxrss`` in bytes, while Linux reports it in KiB. On macOS, pages
+    held in the compressed-memory store are not included in this metric.
     """
-    if sys.platform == 'linux':
-        import resource  # not available on Windows
+    if sys.platform not in ('linux', 'darwin'):
+        raise NotImplementedError('peak_added_bytes needs Linux or macOS')
 
-        # With the assumption above, the peak so far is the current use.
-        before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        func(*args)
-        after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return (after - before) * 1024  # Linux reports ru_maxrss in kB
+    # not available on Windows
+    import resource
 
-    if sys.platform == 'darwin':
-        before = _macos_rusage().ri_phys_footprint
-        func(*args)
-        return _macos_rusage().ri_lifetime_max_phys_footprint - before
-
-    raise NotImplementedError('peak_added_bytes needs Linux or macOS')
+    # With the assumption above, the peak so far is the current use.
+    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    func(*args)
+    after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    scale = 1024 if sys.platform == 'linux' else 1
+    return (after - before) * scale
 
 
-class TrackMemVOTableArrays:
-    """Peak memory while parsing a large table with an array column."""
+class TrackMemoryTimeVOTableArrays:
+    """Peak memory and time while parsing a table with an array column."""
 
     params = ['tabledata', 'binary', 'binary2']
     param_names = ['tabledata_format']
@@ -374,9 +342,9 @@ class TrackMemVOTableArrays:
         # the files does not count toward the peak memory measured below.
         table = Table(
             [
-                rng.uniform(0, 360, LARGE_SIZE),
-                rng.uniform(-90, 90, LARGE_SIZE),
-                rng.normal(size=(LARGE_SIZE, 50)),
+                ra_data[:MEDIUM_SIZE],
+                dec_data[:MEDIUM_SIZE],
+                spectrum_data[:MEDIUM_SIZE]
             ],
             names=['ra', 'dec', 'spectrum']
         )
@@ -385,9 +353,8 @@ class TrackMemVOTableArrays:
         votable.to_xml('arrays_binary.vot', tabledata_format='binary')
         votable.to_xml('arrays_binary2.vot', tabledata_format='binary2')
 
-    def setup(self, tabledata_format):
-        if sys.platform not in ('linux', 'darwin'):
-            raise NotImplementedError('peak_added_bytes needs Linux or macOS')
-
     def track_peak_memory_parse(self, tabledata_format):
         return peak_added_bytes(parse, f'arrays_{tabledata_format}.vot')
+
+    def time_parse_tabledata(self, tabledata_format):
+        parse(f'arrays_{tabledata_format}.vot')
