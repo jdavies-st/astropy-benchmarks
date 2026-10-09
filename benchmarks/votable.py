@@ -22,7 +22,7 @@ id_data = np.arange(LARGE_SIZE, dtype=np.int64)
 flag_data = np.random.choice([True, False], LARGE_SIZE)
 quality_data = np.random.randint(0, 256, LARGE_SIZE, dtype=np.uint8)
 bool_data = rng.integers(0, 2, LARGE_SIZE, dtype=bool)
-spectrum_data = rng.normal(size=(LARGE_SIZE, 50))
+spectrum_data = rng.normal(size=(MEDIUM_SIZE, 50))
 
 short_names = np.array([f"OBJ_{i:08d}" for i in range(LARGE_SIZE)])
 filter_names = np.random.choice(['u', 'g', 'r', 'i', 'z', 'Y'], LARGE_SIZE)
@@ -356,5 +356,5 @@ class TrackMemoryTimeVOTableArrays:
     def track_peak_memory_parse(self, tabledata_format):
         return peak_added_bytes(parse, f'arrays_{tabledata_format}.vot')
 
-    def time_parse_tabledata(self, tabledata_format):
+    def time_parse(self, tabledata_format):
         parse(f'arrays_{tabledata_format}.vot')
